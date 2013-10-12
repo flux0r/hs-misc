@@ -67,22 +67,8 @@ integerToPt x =
         l = (fromIntegral x) .&. ones64
     in  Pt l h
 
--- quotRemPt :: PlainText -> PlainText -> (PlainText, PlainText)
--- quotRemPt x y =
---     let r = x - q*y
---         q = iter 0 64 0
---     in  (q, r)
---   where
---     iter t 0 v = if v >= y then t + 1 else t
---     iter t i v =
---         if v >= y
---             then iter (setBit t i) i' v2
---             else iter t i' v1
---       where
---         i' = i - 1
---         newBit = if (testBit x i') then 1 else 0
---         v1 = (v `shiftL` 1) .|. newBit
---         v2 = ((v - y) `shiftL` 1) .|. newBit
+ones32 :: Word32
+ones32 = 0xffffffff
 
 ones64 :: Word64
 ones64 = 0xffffffffffffffff
@@ -98,11 +84,16 @@ b1 = unBlock . _2
 b2 = unBlock . _3
 b3 = unBlock . _4
 
--- mkBlock :: PlainText -> Block
--- mkBlock x = let x' = fromIntegral x in
---     Bl (x' .&. ones,
---        (x' `shiftR` 32) .&. ones,
---        (x' `shiftR` 64) .&. ones,
---        (x' `shiftR` 96) .&. ones)
---   where
---     ones = 0xffffffff
+toBlock :: PlainText -> Block
+toBlock x = Bl ((fromIntegral $ x^.lo) .&. ones32,
+               (fromIntegral $ x^.lo `shiftR` 32) .&. ones32,
+               (fromIntegral $ x^.hi) .&. ones32,
+               (fromIntegral $ x^.hi `shiftR` 32) .&. ones32)
+
+toPlainText :: Block -> PlainText
+toPlainText x =
+    let x0 = (fromIntegral $ x^.b0) .&. ones64
+        x1 = ((fromIntegral $ x^.b1) `shiftL` 32) .&. ones64
+        x2 = (fromIntegral $ x^.b2) .&. ones64
+        x3 = ((fromIntegral $ x^.b3) `shiftL` 32) .&. ones64
+    in  Pt (x0 .|. x1) (x2 .|. x3)
