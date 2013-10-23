@@ -7,18 +7,15 @@ import GHC.Base (nullAddr#)
 import GHC.IO (unsafeDupablePerformIO)
 import GHC.ForeignPtr (mallocPlainForeignPtrBytes, nullAddr#)
 
-data Words = Ws
-    { w         :: ForeignPtr Word64
+data Bytes = B
+    { w         :: Ptr Word64
     , len       :: Int
     , offset    :: Int
-    , octets    :: Int
     }
 
-mkWords :: Int -> (Ptr Word64 -> IO ()) -> IO Words
-mkWords sz f = mallocPlainForeignPtrBytes sz >>= \ptr ->
-    withForeignPtr ptr (\p -> f p) >> (return $! Ws ptr sz 0 0)
+mkBytes :: Int -> (Ptr Word64 -> IO ()) -> IO Bytes
+mkBytes sz f = mallocPlainForeignPtrBytes sz >>= \ptr ->
+    withForeignPtr ptr (\p -> f p) >> (return $! B ptr sz 0)
 
-unsafeMkWords :: Int -> (Ptr Word64 -> IO ()) -> Words
-unsafeMkWords l f = unsafeDupablePerformIO (mkWords l f)
-
-nullForeignPtr = ForeignPtr nullAddr#
+unsafeMkBytes :: Int -> (Ptr Word64 -> IO ()) -> Bytes
+unsafeMkBytes l f = unsafeDupablePerformIO (mkWords l f)
