@@ -2,7 +2,8 @@ import Control.Applicative (Applicative, (<*>), (<$>), pure)
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Concurrent.STM.TArray (TArray)
 import Control.Monad (liftM)
-import Control.Monad.Trans.Reader (ReaderT, runReaderT)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Reader (ReaderT (ReaderT), runReaderT)
 
 data Finalizer = MkFinalizer
     { finalize      :: !(IO ())
@@ -19,7 +20,7 @@ unitRgn :: Monad m => a -> RegionT s m a
 unitRgn = MkRegionT . return
 
 apRgn :: Monad m => RegionT s m (a -> b) -> RegionT s m a -> RegionT s m b
-(MkRegionT fs) `apRgn` m = MkRegionT $ unRegionT m >>= \x ->
+(MkRegionT fs) `apRgn` (MkRegionT m) = MkRegionT $ m >>= \x ->
     fs >>= \f -> return (f x)
 
 bindRgn :: Monad m => RegionT s m a -> (a -> RegionT s m b) -> RegionT s m b
