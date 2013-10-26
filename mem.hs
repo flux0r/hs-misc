@@ -1,17 +1,22 @@
+{-# LANGUAGE KindSignatures #-}
+
 import Control.Applicative (Applicative, (<*>), (<$>), pure)
-import Control.Concurrent.STM.TVar (TVar)
-import Control.Concurrent.STM.TArray (TArray)
+import Control.Concurrent.STM (STM, atomically)
+import Control.Concurrent.STM.TVar (TVar, newTVar)
+import Control.Concurrent.STM.TQueue (TQueue, writeTQueue)
 import Control.Monad (liftM)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans (MonadIO, lift, liftIO)
 import Control.Monad.Trans.Reader (ReaderT (ReaderT), runReaderT)
 
 data Finalizer = MkFinalizer
-    { finalize      :: !(IO ())
-    , refCount      :: !(IO (TVar Int))
+    { finalize      :: !(STM ())
+    , refCount      :: !(STM (TVar Int))
     }
 
 newtype RegionT s m a = MkRegionT
-    { unRegionT :: ReaderT (IO (TArray Int Finalizer)) m a }
+    { unRegionT :: ReaderT (TQueue Finalizer) m a }
+
+newtype FinalizerHandle (r :: * -> *) = FinalizerHandle Finalizer
 
 mapRgn :: Monad m => (a -> b) -> RegionT s m a -> RegionT s m b
 mapRgn f (MkRegionT fs) = MkRegionT (f `liftM` fs)
@@ -36,3 +41,18 @@ instance Monad m => Applicative (RegionT s m) where
 instance Monad m => Monad (RegionT s m) where
     return  = unitRgn
     (>>=)   = bindRgn
+
+onExit :: MonadIO m
+       => STM ()
+       -> RegionT s m (FinalizerHandle (RegionT s m))
+onExit cleanup =
+    MkRegionT $ ReaderT $ liftIO . atomically . register cleanup
+
+register :: STM () -> TQueue Finalizer -> STM (FinalizerHandle r)
+register cleanup q = newTVar 1 >>= addFinalizer q . countRef cleanup
+
+countRef :: STM () -> TVar Int -> Finalizer
+countRef cleanup = MkFinalizer cleanup . return
+
+addFinalizer :: TQueue Finalizer -> Finalizer -> STM (FinalizerHandle r)
+addFinalizer q f = writeTQueue q f >> return (FinalizerHandle f)
