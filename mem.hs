@@ -2,8 +2,9 @@
 
 import Control.Applicative (Applicative, (<*>), (<$>), pure)
 import Control.Concurrent.STM (STM, atomically)
-import Control.Concurrent.STM.TVar (TVar, newTVar)
-import Control.Concurrent.STM.TQueue (TQueue, writeTQueue)
+import Control.Concurrent.STM.TVar (TVar, modifyTVar, newTVar)
+import Control.Concurrent.STM.TQueue (TQueue, newTQueue, readTQueue,
+                                      writeTQueue)
 import Control.Monad (liftM)
 import Control.Monad.Trans (MonadIO, lift, liftIO)
 import Control.Monad.Trans.Reader (ReaderT (ReaderT), runReaderT)
@@ -47,12 +48,27 @@ onExit :: MonadIO m
        -> RegionT s m (FinalizerHandle (RegionT s m))
 onExit cleanup =
     MkRegionT $ ReaderT $ liftIO . atomically . register cleanup
+  where
+    register :: STM () -> TQueue Finalizer -> STM (FinalizerHandle r)
+    register cleanup q = newTVar 1 >>= addFinalizer q . countRef cleanup
 
-register :: STM () -> TQueue Finalizer -> STM (FinalizerHandle r)
-register cleanup q = newTVar 1 >>= addFinalizer q . countRef cleanup
+    countRef :: STM () -> TVar Int -> Finalizer
+    countRef cleanup = MkFinalizer cleanup . return
 
-countRef :: STM () -> TVar Int -> Finalizer
-countRef cleanup = MkFinalizer cleanup . return
+    addFinalizer :: TQueue Finalizer -> Finalizer -> STM (FinalizerHandle r)
+    addFinalizer q f = writeTQueue q f >> return (FinalizerHandle f)
 
-addFinalizer :: TQueue Finalizer -> Finalizer -> STM (FinalizerHandle r)
-addFinalizer q f = writeTQueue q f >> return (FinalizerHandle f)
+before = newTQueue
+
+doit r h = runReaderT (unRegionT r) h
+
+after h = readTQueue h
+
+f x =
+    let finalizer   = finalize x
+        cnt         = refCount x
+    in  cnt >>= decrement
+
+decrement x = atomically . modifyTVar x $ \cnt ->
+    let cnt'    = cnt - 1
+    in  cnt'
