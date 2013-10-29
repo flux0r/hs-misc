@@ -5,13 +5,14 @@ import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent.STM.TVar (TVar, modifyTVar, newTVar)
 import Control.Concurrent.STM.TQueue (TQueue, newTQueue, readTQueue,
                                       writeTQueue)
-import Control.Monad (liftM)
-import Control.Monad.Trans (MonadIO, lift, liftIO)
+import Control.Monad (join, liftM)
+import Control.Monad.IO.Class (MonadIO (liftIO))
+import Control.Monad.Trans (MonadTrans, lift)
 import Control.Monad.Trans.Reader (ReaderT (ReaderT), runReaderT)
 
 data Finalizer = MkFinalizer
-    { finalize      :: !(STM ())
-    , refCount      :: !(STM (TVar Int))
+    { finalize      :: !(IO ())
+    , refCount      :: !(TVar Int)
     }
 
 newtype RegionT s m a = MkRegionT
@@ -19,56 +20,38 @@ newtype RegionT s m a = MkRegionT
 
 newtype FinalizerHandle (r :: * -> *) = FinalizerHandle Finalizer
 
-mapRgn :: Monad m => (a -> b) -> RegionT s m a -> RegionT s m b
-mapRgn f (MkRegionT fs) = MkRegionT (f `liftM` fs)
+mapR :: Functor f => (a -> b) -> RegionT s f a -> RegionT s f b
+mapR f (MkRegionT m) = MkRegionT (f <$> m)
 
-unitRgn :: Monad m => a -> RegionT s m a
-unitRgn = MkRegionT . return
+unitR :: Monad f => a -> RegionT s f a
+unitR x = MkRegionT (return x)
 
-apRgn :: Monad m => RegionT s m (a -> b) -> RegionT s m a -> RegionT s m b
-(MkRegionT fs) `apRgn` (MkRegionT m) = MkRegionT $ m >>= \x ->
-    fs >>= \f -> return (f x)
+apR :: (Applicative f, Monad f)
+    => RegionT s f (a -> b)
+    -> RegionT s f a
+    -> RegionT s f b
+(MkRegionT ff) `apR` (MkRegionT fx) = MkRegionT $ ff <*> fx
 
-bindRgn :: Monad m => RegionT s m a -> (a -> RegionT s m b) -> RegionT s m b
-m `bindRgn` f = MkRegionT $ unRegionT m >>= unRegionT . f
+bindR :: Monad f => RegionT s f a -> (a -> RegionT s f b) -> RegionT s f b
+(MkRegionT m) `bindR` f = MkRegionT $ m >>= unRegionT . f
 
-instance Monad m => Functor (RegionT s m) where
-    fmap = mapRgn
+instance Functor f => Functor (RegionT s f) where
+    fmap = mapR
 
-instance Monad m => Applicative (RegionT s m) where
-    pure    = unitRgn
-    (<*>)   = apRgn
+instance (Applicative f, Monad f) => Applicative (RegionT s f) where
+    pure    = unitR
+    (<*>)   = apR
 
-instance Monad m => Monad (RegionT s m) where
-    return  = unitRgn
-    (>>=)   = bindRgn
+instance (Applicative f, Monad f) => Monad (RegionT s f) where
+    return  = unitR
+    (>>=)   = bindR
 
-onExit :: MonadIO m
-       => STM ()
-       -> RegionT s m (FinalizerHandle (RegionT s m))
-onExit cleanup =
-    MkRegionT $ ReaderT $ liftIO . atomically . register cleanup
-  where
-    register :: STM () -> TQueue Finalizer -> STM (FinalizerHandle r)
-    register cleanup q = newTVar 1 >>= addFinalizer q . countRef cleanup
+instance (Applicative f, MonadIO f) => MonadIO (RegionT s f) where
+    liftIO = MkRegionT . liftIO
 
-    countRef :: STM () -> TVar Int -> Finalizer
-    countRef cleanup = MkFinalizer cleanup . return
+instance MonadTrans (RegionT s) where
+    lift = MkRegionT . lift
 
-    addFinalizer :: TQueue Finalizer -> Finalizer -> STM (FinalizerHandle r)
-    addFinalizer q f = writeTQueue q f >> return (FinalizerHandle f)
+--onExit cleanup = MkRegionT $ ReaderT $
 
-before = newTQueue
-
-doit r h = runReaderT (unRegionT r) h
-
-after h = readTQueue h
-
-f x =
-    let finalizer   = finalize x
-        cnt         = refCount x
-    in  cnt >>= decrement
-
-decrement x = atomically . modifyTVar x $ \cnt ->
-    let cnt'    = cnt - 1
-    in  cnt'
+f cleanup = newTVar 1 >>= return . MkFinalizer cleanup
