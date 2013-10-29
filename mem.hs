@@ -1,14 +1,9 @@
 {-# LANGUAGE KindSignatures #-}
 
-import Control.Applicative (Applicative, (<*>), (<$>), pure)
-import Control.Concurrent.STM (STM, atomically)
-import Control.Concurrent.STM.TVar (TVar, modifyTVar, newTVar)
-import Control.Concurrent.STM.TQueue (TQueue, newTQueue, readTQueue,
-                                      writeTQueue)
-import Control.Monad (join, liftM)
-import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Trans (MonadTrans, lift)
-import Control.Monad.Trans.Reader (ReaderT (ReaderT), runReaderT)
+import Control.Applicative (Applicative, (<$>), (<*>), pure)
+import Control.Concurrent.STM (STM, TQueue, TVar, newTVar, writeTQueue)
+import Control.Monad.Reader (ReaderT (ReaderT))
+import Control.Monad.Trans (MonadIO, MonadTrans, lift, liftIO)
 
 data Finalizer = MkFinalizer
     { finalize      :: !(IO ())
@@ -54,4 +49,20 @@ instance MonadTrans (RegionT s) where
 
 --onExit cleanup = MkRegionT $ ReaderT $
 
+--f :: IO () -> STM Finalizer
 f cleanup = newTVar 1 >>= return . MkFinalizer cleanup
+
+--g :: TQueue Finalizer -> Finalizer -> STM (FinalizerHandle r)
+--g q h = h >>= \h' -> writeTQueue q h' >> return $ FinalizerHandle h
+
+--h cleanup q = g q (f cleanup)
+
+--onExit cleanup = MkRegionT $ ReaderT $ \q -> g q (f cleanup)
+
+onExit cleanup = MkRegionT $ ReaderT $ \q -> return $
+    let cleanup' = liftIO cleanup
+    in  do
+            cnt <- newTVar 1
+            let h = MkFinalizer cleanup' cnt
+            writeTQueue q h
+            return $ FinalizerHandle h
