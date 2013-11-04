@@ -1,10 +1,13 @@
-{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE KindSignatures, RankNTypes #-}
 
 import Control.Applicative (Applicative, (<$>), (<*>), pure)
 import Control.Concurrent.STM (STM, TQueue, TVar, atomically, newTVar,
                                modifyTVar, writeTQueue)
+import Control.Monad (join)
+import Control.Monad.IO.Control (MonadControlIO, liftControlIO)
 import Control.Monad.Reader (ReaderT (ReaderT))
 import Control.Monad.Trans (MonadIO, MonadTrans, lift, liftIO)
+import Control.Monad.Trans.Control (RunInBase)
 
 data Finalizer = MkFinalizer
     { finalize      :: !(IO ())
@@ -15,6 +18,8 @@ newtype RegionT s m a = MkRegionT
     { un_region :: ReaderT (TQueue Finalizer) m a }
 
 newtype FinalizerHandle (r :: * -> *) = FinalizerHandle Finalizer
+
+data RootRegion a
 
 map_region :: Functor f => (a -> b) -> RegionT s f a -> RegionT s f b
 map_region f (MkRegionT m) = MkRegionT (f <$> m)
@@ -59,6 +64,14 @@ class Duplicate h where
 instance Duplicate FinalizerHandle where
     duplicate = lift . copy
 
+class MonadIO f => RegionControlIO f where
+    unsafeLiftControlIO :: (RunInBase f IO -> IO a) -> f a
+
+-- lc f = unsafeLiftControlIO $ \run_parent ->
+--     unsafeLiftControlIO $ \run_base ->
+--     let run = fmap (join . lift) . run_base . run_parent
+--     in  f run
+
 onExit :: MonadIO f => IO () -> RegionT s f (FinalizerHandle (RegionT s f))
 onExit cleanup = MkRegionT $ ReaderT $ \q ->
     liftIO . atomically $ newTVar 1 >>= \cnt ->
@@ -67,14 +80,16 @@ onExit cleanup = MkRegionT $ ReaderT $ \q ->
         return (FinalizerHandle h)
 
 inc_ref_cnt :: TVar Int -> STM ()
-inc_ref_cnt x = modifyTVar x (+ 1)
+inc_ref_cnt = flip modifyTVar (+ 1)
+
+dec_ref_cnt :: TVar Int -> STM ()
+dec_ref_cnt = flip modifyTVar (subtract 1)
 
 copy :: MonadIO f
      => FinalizerHandle a
      -> RegionT s f (FinalizerHandle (RegionT s f))
 copy (FinalizerHandle h) =
-    MkRegionT $ ReaderT $ \q ->
-    (liftIO . atomically)
-    ((inc_ref_cnt . ref_cnt) h >>
+    MkRegionT $ ReaderT $ \q -> liftIO . atomically $
+    (inc_ref_cnt . ref_cnt) h >>
     writeTQueue q h >>
-    return (FinalizerHandle h))
+    (return . FinalizerHandle) h
