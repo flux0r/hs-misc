@@ -1,11 +1,16 @@
-{-# LANGUAGE KindSignatures, RankNTypes #-}
+{-# LANGUAGE KindSignatures, RankNTypes, ScopedTypeVariables #-}
 
 import Control.Applicative (Applicative ((<*>), pure), (<$>))
-import Control.Concurrent.STM (STM, TBQueue, TVar, atomically, modifyTVar,
-                               newTVar, readTVar, writeTBQueue, writeTVar)
-import Control.Exception (assert)
-import Control.Monad.Reader (ReaderT (ReaderT), local)
+import Control.Concurrent.STM (STM, TBQueue, TVar, atomically, isEmptyTBQueue,
+                               modifyTVar, newTBQueue, newTVar, readTBQueue,
+                               readTVar, retry, writeTBQueue, writeTVar)
+import Control.Exception (Exception)
+import qualified Control.Exception as E
+import Control.Monad (when, unless)
+import Control.Monad.Reader (ReaderT (ReaderT), local, runReaderT)
 import Control.Monad.Trans (MonadIO, lift, liftIO)
+import Foreign.Marshal.Alloc (free, mallocBytes)
+import Foreign.Ptr (Ptr)
 
 newtype ZoneT s p a = MkZoneT { un_zone_t :: ReaderT (TBQueue Ref) p a }
 
@@ -13,6 +18,8 @@ data Ref = MkRef
     { cleanup   :: IO ()
     , ref_cnt   :: TVar Int
     }
+
+data Resource a r = MkResource a (Hnd r)
 
 data Hnd (r :: * -> *) = MkHnd Ref
 
@@ -58,10 +65,109 @@ on_exit :: MonadIO p => IO () -> ZoneT s p (Hnd (ZoneT s p))
 on_exit c = MkZoneT . ReaderT $ liftAtomically . initialize c
 
 inc_ref_cnt :: TVar Int -> STM ()
-inc_ref_cnt = flip modifyTVar (subtract 1)
+inc_ref_cnt = flip modifyTVar (+ 1)
 
 dec_ref_cnt :: TVar Int -> STM ()
-dec_ref_cnt = flip modifyTVar (+ 1)
+dec_ref_cnt = flip modifyTVar (subtract 1)
 
 lift_zone_t :: Monad p => ZoneT s' p a -> ZoneT s (ZoneT s' p) a
 lift_zone_t = MkZoneT . lift
+
+class Monad m => ZoneIO m where
+    bracket :: m a -> (a -> m b) -> (a -> m c) -> m c
+    catch   :: Exception e => m a -> (e -> m a) -> m a
+    lift_io :: IO a -> m a
+
+reader_t_bracket :: ZoneIO m
+                 => ReaderT r m a
+                 -> (a -> ReaderT r m b)
+                 -> (a -> ReaderT r m c)
+                 -> ReaderT r m c
+reader_t_bracket before after during = ReaderT $ \r ->
+    let run = flip runReaderT r
+    in  bracket (run before)
+                (run . after)
+                (run . during)
+
+reader_t_catch :: (Exception e, ZoneIO m)
+               => ReaderT r m a
+               -> (e -> ReaderT r m a)
+               -> ReaderT r m a
+reader_t_catch m handler = ReaderT $ \r ->
+    runReaderT m r `catch` \e -> runReaderT (handler e) r
+
+reader_t_lift_io :: ZoneIO m => IO a -> ReaderT r m a
+reader_t_lift_io = lift . lift_io
+
+zone_t_bracket :: ZoneIO p
+               => ZoneT s p a
+               -> (a -> ZoneT s p b)
+               -> (a -> ZoneT s p c)
+               -> ZoneT s p c
+zone_t_bracket before after during = MkZoneT $
+    bracket (un_zone_t before)
+            (un_zone_t . after)
+            (un_zone_t . during)
+
+zone_t_catch :: (Exception e, ZoneIO p)
+             => ZoneT s p a
+             -> (e -> ZoneT s p a)
+             -> ZoneT s p a
+zone_t_catch m handler = MkZoneT (un_zone_t m `catch` (un_zone_t . handler))
+
+zone_t_lift_io :: ZoneIO p => IO a -> ZoneT s p a
+zone_t_lift_io = MkZoneT . lift_io
+
+instance ZoneIO IO where
+    bracket = E.bracket
+    catch   = E.catch
+    lift_io = id
+
+instance ZoneIO m => ZoneIO (ReaderT r m) where
+    bracket = reader_t_bracket
+    catch   = reader_t_catch
+    lift_io = reader_t_lift_io
+
+instance ZoneIO p => ZoneIO (ZoneT s p) where
+    bracket = zone_t_bracket
+    catch   = zone_t_catch
+    lift_io = zone_t_lift_io
+
+empty_ref_cnt ref_cnt cleanup =
+    dec_ref_cnt ref_cnt >>
+    readTVar ref_cnt >>= \x ->
+    when (x == 0) cleanup
+
+thing z x = runReaderT (un_zone_t z) x
+
+f (MkRef c x) = do
+    ref_cnt <- dec_ref_cnt x >> readTVar x
+    if ref_cnt == 0 then return c else retry
+
+g q = isEmptyTBQueue q >>= \x ->
+    unless (x) (readTBQueue q >>= \y -> f y >> g q)
+
+ref_runner (MkRef cleanup ref_cnt) = do
+    dec_ref_cnt ref_cnt
+    cnt <- readTVar ref_cnt
+    if cnt == 0 then return cleanup else retry
+
+queue_runner q = do
+    is_empty <- isEmptyTBQueue q
+    unless is_empty $ do
+        x <- readTBQueue q
+        ref_runner x
+        queue_runner q
+
+runZoneT :: ZoneIO p => (forall s. ZoneT s p a) -> Int -> p a
+runZoneT z n = 
+    let before      = lift_io $ atomically (newTBQueue n)
+        after       = lift_io . atomically . queue_runner
+        during q    = runReaderT (un_zone_t z) q
+    in bracket before after during
+
+data ZPtr a (r :: * -> *) = MkZPtr (Ptr a) (Hnd r)
+
+newPtr p = (MkZPtr p) <$> (on_exit (free p))
+
+mkptr x c = MkResource
