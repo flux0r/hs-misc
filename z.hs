@@ -133,25 +133,13 @@ instance ZoneIO p => ZoneIO (ZoneT s p) where
     catch   = zone_t_catch
     lift_io = zone_t_lift_io
 
-empty_ref_cnt ref_cnt cleanup =
-    dec_ref_cnt ref_cnt >>
-    readTVar ref_cnt >>= \x ->
-    when (x == 0) cleanup
-
-thing z x = runReaderT (un_zone_t z) x
-
-f (MkRef c x) = do
-    ref_cnt <- dec_ref_cnt x >> readTVar x
-    if ref_cnt == 0 then return c else retry
-
-g q = isEmptyTBQueue q >>= \x ->
-    unless (x) (readTBQueue q >>= \y -> f y >> g q)
-
+ref_runner :: Ref -> STM (IO ())
 ref_runner (MkRef cleanup ref_cnt) = do
     dec_ref_cnt ref_cnt
     cnt <- readTVar ref_cnt
     if cnt == 0 then return cleanup else retry
 
+queue_runner :: TBQueue Ref -> STM ()
 queue_runner q = do
     is_empty <- isEmptyTBQueue q
     unless is_empty $ do
@@ -166,8 +154,8 @@ runZoneT z n =
         during q    = runReaderT (un_zone_t z) q
     in bracket before after during
 
-data ZPtr a (r :: * -> *) = MkZPtr (Ptr a) (Hnd r)
+newZonePtr :: Ptr a -> STM (Resource (Ptr a) r)
+newZonePtr p = new_ref (free p) >>= return . MkResource p . MkHnd
 
-newPtr p = (MkZPtr p) <$> (on_exit (free p))
-
-mkptr x c = MkResource
+wrapMallocBytes :: ZoneIO m => Int -> m (Resource (Ptr a) r)
+wrapMallocBytes n = lift_io (mallocBytes n >>= atomically . newZonePtr)
