@@ -1,12 +1,13 @@
 {-# LANGUAGE MagicHash, NoImplicitPrelude, UnboxedTuples #-}
 
 ------------------------------------------------------------------------------
+import Control.Applicative ((<$>))
 import Control.Category (Category ((.), id))
 import Control.Monad (Monad ((>>), (>>=), return))
 import Data.Bool (Bool (True, False), (&&), otherwise)
 import Data.Eq (Eq ((/=), (==)))
 import Data.Int (Int)
-import Data.Ord (Ordering (EQ, GT, LT), compare, min)
+import Data.Ord (Ord, Ordering (EQ, GT, LT), compare, min)
 import Data.Word (Word64)
 import Foreign.C.Types (CInt (CInt), CSize (CSize))
 import Foreign.Ptr (Ptr, plusPtr)
@@ -100,14 +101,15 @@ instance Ord Bytes where
 
 cmp_b :: Bytes -> Bytes -> Ordering
 cmp_b (B _ _ 0) (B _ _ 0) = EQ
-cmp_b x y = inlinePerformIO (cmp >>= return . inspect)
+cmp_b x y = inlinePerformIO $
+    orderOf <$> memcmp (seek x) (seek y) (min l0 l1)
   where
-    cmp         = memcmp (seek x) (seek y) (min l0 l1)
     l0          = len x
     l1          = len y
-    inspect x   = case compare x 0 of
-        EQ              -> compare l0 l1
-        x               -> x
+    orderOf x   = case compare x 0 of
+        EQ  -> compare l0 l1
+        x   -> x
+
 
 
 ------------------------------------------------------------------------------
