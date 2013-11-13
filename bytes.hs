@@ -22,6 +22,9 @@ import Prelude (fromIntegral)
 ------------------------------------------------------------------------------
 
 
+------------------------------------------------------------------------------
+-- | int memcmp(const void *s1, const void *s2, size_t n);
+
 foreign import ccall unsafe "string.h memcmp" c_memcmp
     :: Ptr Word64 -> Ptr Word64 -> CSize -> IO CInt
 
@@ -45,6 +48,7 @@ seek (B p i _) = plusPtr p i
 
 len :: Bytes -> Int
 len (B _ _ s) = s
+
 
 
 ------------------------------------------------------------------------------
