@@ -7,7 +7,7 @@ import Control.Concurrent.STM (STM, TBQueue, TVar, atomically, isEmptyTBQueue,
 import Control.Exception (Exception)
 import qualified Control.Exception as E
 import Control.Monad (when, unless)
-import Control.Monad.Reader (ReaderT (ReaderT), local, runReaderT)
+import Control.Monad.Reader (ReaderT (ReaderT), ask, local, runReaderT)
 import Control.Monad.Trans (MonadIO, lift, liftIO)
 import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Ptr (Ptr)
@@ -61,8 +61,8 @@ liftAtomically = liftIO . atomically
 initialize :: IO () -> TBQueue Ref -> STM (Hnd a)
 initialize c q = new_ref c >>= insert_ref q
 
-on_exit :: MonadIO p => IO () -> ZoneT s p (Hnd (ZoneT s p))
-on_exit c = MkZoneT . ReaderT $ liftAtomically . initialize c
+on_exit :: ZoneIO p => IO () -> ZoneT s p (Hnd (ZoneT s p))
+on_exit c = MkZoneT . ReaderT $ lift_io . atomically . initialize c
 
 inc_ref_cnt :: TVar Int -> STM ()
 inc_ref_cnt = flip modifyTVar (+ 1)
@@ -154,8 +154,13 @@ runZoneT z n =
         during q    = runReaderT (un_zone_t z) q
     in bracket before after during
 
-newZonePtr :: Ptr a -> STM (Resource (Ptr a) r)
-newZonePtr p = new_ref (free p) >>= return . MkResource p . MkHnd
+new_resource :: (Functor p, ZoneIO p)
+             => a
+             -> IO ()
+             -> ZoneT s p (Resource a (ZoneT s p))
+new_resource x cleanup = MkResource x <$> on_exit cleanup
 
-wrapMallocBytes :: ZoneIO m => Int -> m (Resource (Ptr a) r)
-wrapMallocBytes n = lift_io (mallocBytes n >>= atomically . newZonePtr)
+--wrapAcquire :: (Functor p, ZoneIO p) => IO a -> ZoneT s p (Resource a (ZoneT s p))
+wrapAcquire x rel runInIO = lift_io $ do
+    x' <- x
+    runInIO $ new_resource x' (rel x')
