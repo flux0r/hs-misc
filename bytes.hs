@@ -4,6 +4,7 @@
 import Control.Applicative ((<$>))
 import Control.Category (Category ((.), id))
 import Control.Monad (Monad ((>>), (>>=), return))
+import Data.Bits (shiftR)
 import Data.Bool (Bool (True, False), (&&), otherwise)
 import Data.Eq (Eq ((/=), (==)))
 import Data.Function (($))
@@ -11,9 +12,13 @@ import Data.Int (Int)
 import Data.Ord (Ord, Ordering (EQ, GT, LT), (>), (<), compare, min)
 import Data.Word (Word64)
 import Foreign.C.Types (CInt (CInt), CSize (CSize))
+import Foreign.ForeignPtr (ForeignPtr, withForeignPtr)
+import Foreign.Marshal.Alloc (mallocBytes)
 import Foreign.Ptr (plusPtr)
+import Foreign.Storable (poke)
 import GHC.Base (realWorld#)
-import GHC.IO (IO (IO))
+import GHC.ForeignPtr (mallocPlainForeignPtrBytes)
+import GHC.IO (IO (IO), unsafeDupablePerformIO)
 import GHC.Prim (Addr#)
 import GHC.Ptr (Ptr (Ptr))
 import Prelude (fromIntegral)
@@ -44,14 +49,12 @@ memcmp p q = c_memcmp p q . fromIntegral
 
 ------------------------------------------------------------------------------
 -- | A Word64 vector.
+--
+-- A Buffer is a Ptr Word64 payload, an Int offset in Word64s, and an Int --
+-- length in octets.
 
-data Bytes = B (Ptr Word64) Int Int
+data Buffer = B (Ptr Word64) Int Int
 
-seek :: Bytes -> Ptr a
-seek (B p i _) = plusPtr p i
-
-len :: Bytes -> Int
-len (B _ _ s) = s
 
 
 ------------------------------------------------------------------------------
@@ -77,56 +80,27 @@ instance (Ord HttpVersion) where
 
 ------------------------------------------------------------------------------
 
-mk_bytes :: Ptr Word64 -> Int -> Int -> Bytes
-mk_bytes = B
+mk_buffer :: Ptr Word64 -> Int -> Int -> Buffer
+mk_buffer = B
 
 
 ------------------------------------------------------------------------------
 
-un_bytes :: Bytes -> (Ptr Word64, Int, Int)
-un_bytes (B p i l) = (p, i, l)
+un_buffer :: Buffer -> (Ptr Word64, Int, Int)
+un_buffer (B p i l) = (p, i, l)
 
 
 ------------------------------------------------------------------------------
--- | Create a Bytes of size l using Ptr p and then fill it with action f.
+-- | Create a Buffer of size l using Ptr p and then fill it with action f.
 
-create :: Ptr Word64 -> Int -> (Ptr Word64 -> IO ()) -> IO Bytes
-create p l f = f p >> return (mk_bytes p 0 l)
+create :: Ptr Word64 -> Int -> (Ptr Word64 -> IO ()) -> IO Buffer
+create p l f = f p >> return (mk_buffer p 0 l)
 
 
 
 ------------------------------------------------------------------------------
 -- Instances                                                                --
 ------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
-
-instance Eq Bytes where
-    (==) = eq_b
-
-eq_b :: Bytes -> Bytes -> Bool
-eq_b x@(B p0 i0 l0) y@(B p1 i1 l1)
-    | l0 /= l1              = False
-    | p0 == p1 && i0 == i1  = True
-    | otherwise             = cmp_b x y == EQ
-
-
-------------------------------------------------------------------------------
-
-instance Ord Bytes where
-    compare = cmp_b
-
-cmp_b :: Bytes -> Bytes -> Ordering
-cmp_b (B _ _ 0) (B _ _ 0) = EQ
-cmp_b x y = inlinePerformIO $
-    orderOf <$> memcmp (seek x) (seek y) (min l0 l1)
-  where
-    l0          = len x
-    l1          = len y
-    orderOf x   = case compare x 0 of
-        EQ  -> compare l0 l1
-        x   -> x
 
 
 
@@ -137,8 +111,11 @@ cmp_b x y = inlinePerformIO $
 ones64 :: Word64
 ones64 = 0xffffffffffffffff --18446744073709551615
 
-httpVersionPrefix :: Word64
-httpVersionPrefix = 0x485454502f --"HTTP/"
+httpVersionPrefix64 :: Word64
+httpVersionPrefix64 = 0x485454502f --"HTTP/"
+
+httpVersionPrefix :: Ptr Word64 -> Buffer
+httpVersionPrefix p = unsafeCreate p 5 (\p -> poke p httpVersionPrefix64)
 
 
 
@@ -154,19 +131,8 @@ inlinePerformIO :: IO a -> a
 inlinePerformIO (IO m) = case m realWorld# of (# _, r #) -> r
 
 
-unsafe_fill_addr :: Int -> Addr# -> Bytes
-unsafe_fill_addr i a# = B (Ptr a#) 0 i
-
-
-
-------------------------------------------------------------------------------
-
-is_prefix_of :: Bytes -> Bytes -> Bool
-is_prefix_of x@(B p0 i0 l0) y@(B p1 i1 l1)
-    | l0 == 0       = True
-    | l1 < l0       = False
-    | otherwise     = inlinePerformIO $
-        (== 0) <$> memcmp (seek x) (seek y) l0
+unsafeCreate :: Ptr Word64 -> Int -> (Ptr Word64 -> IO ()) -> Buffer
+unsafeCreate p l f = unsafeDupablePerformIO (create p l f)
 
 
 
