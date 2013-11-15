@@ -8,12 +8,13 @@ import Data.Bool (Bool (True, False), (&&), otherwise)
 import Data.Eq (Eq ((/=), (==)))
 import Data.Function (($))
 import Data.Int (Int)
-import Data.Ord (Ord, Ordering (EQ, GT, LT), (<), compare, min)
+import Data.Ord (Ord, Ordering (EQ, GT, LT), (>), (<), compare, min)
 import Data.Word (Word64)
 import Foreign.C.Types (CInt (CInt), CSize (CSize))
 import Foreign.Ptr (plusPtr)
 import GHC.Base (realWorld#)
 import GHC.IO (IO (IO))
+import GHC.Prim (Addr#)
 import GHC.Ptr (Ptr (Ptr))
 import Prelude (fromIntegral)
 ------------------------------------------------------------------------------
@@ -37,7 +38,7 @@ memcmp p q = c_memcmp p q . fromIntegral
 
 
 ------------------------------------------------------------------------------
--- Data representation                                                      --
+-- Data representations                                                     --
 ------------------------------------------------------------------------------
 
 
@@ -52,6 +53,21 @@ seek (B p i _) = plusPtr p i
 len :: Bytes -> Int
 len (B _ _ s) = s
 
+
+------------------------------------------------------------------------------
+-- | Http types
+
+data HttpVersion = MkHttpVersion Int Int
+
+instance (Eq HttpVersion) where
+    (MkHttpVersion l0 r0) == (MkHttpVersion l1 r1) =
+        l0 == l1 && r0 == r1
+
+instance (Ord HttpVersion) where
+    compare (MkHttpVersion l0 r0) (MkHttpVersion l1 r1)
+        | l0 < l1       = LT
+        | l0 > l1       = GT
+        | otherwise     = compare r0 r1
 
 
 ------------------------------------------------------------------------------
@@ -113,12 +129,17 @@ cmp_b x y = inlinePerformIO $
         x   -> x
 
 
-is_prefix_of :: Bytes -> Bytes -> Bool
-is_prefix_of x@(B p0 i0 l0) y@(B p1 i1 l1)
-    | l0 == 0       = True
-    | l1 < l0       = False
-    | otherwise     = inlinePerformIO $
-        (== 0) <$> memcmp (seek x) (seek y) l0
+
+------------------------------------------------------------------------------
+-- Literal values                                                           --
+------------------------------------------------------------------------------
+
+ones64 :: Word64
+ones64 = 0xffffffffffffffff --18446744073709551615
+
+httpVersionPrefix :: Word64
+httpVersionPrefix = 0x485454502f --"HTTP/"
+
 
 
 ------------------------------------------------------------------------------
@@ -135,6 +156,17 @@ inlinePerformIO (IO m) = case m realWorld# of (# _, r #) -> r
 
 unsafe_fill_addr :: Int -> Addr# -> Bytes
 unsafe_fill_addr i a# = B (Ptr a#) 0 i
+
+
+
+------------------------------------------------------------------------------
+
+is_prefix_of :: Bytes -> Bytes -> Bool
+is_prefix_of x@(B p0 i0 l0) y@(B p1 i1 l1)
+    | l0 == 0       = True
+    | l1 < l0       = False
+    | otherwise     = inlinePerformIO $
+        (== 0) <$> memcmp (seek x) (seek y) l0
 
 
 
