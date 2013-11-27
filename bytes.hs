@@ -1,290 +1,166 @@
-{-# LANGUAGE MagicHash, NoImplicitPrelude, UnboxedTuples #-}
+{-# LANGUAGE MagicHash, NoImplicitPrelude, RankNTypes, UnboxedTuples #-}
 
-------------------------------------------------------------------------------
-import Control.Applicative ((<$>))
-import Control.Category (Category ((.), id))
+import Control.Category ((.))
 import Control.Exception (assert)
 import Control.Monad (Monad ((>>), (>>=), return))
-import Data.Bits ((.&.), shiftR)
-import Data.Bool (Bool (True, False), (&&), not, otherwise)
+import Data.Bits ((.&.), (.|.), shiftL, shiftR)
+import Data.Bool (Bool (True, False), (&&))
 import Data.Char (intToDigit)
-import Data.Eq (Eq ((/=), (==)))
-import Data.Function (($))
+import Data.Either (Either (Left, Right))
+import Data.Eq ((==))
+import Data.Functor (fmap)
 import Data.Int (Int)
-import Data.Ord (Ord, Ordering (EQ, GT, LT), (>), (<), (<=), (>=), compare,
-                 min)
+import Data.Ord ((>=), (<=), (>))
+import Data.String (String)
 import Data.Word (Word64)
-import Foreign.C.Types (CInt (CInt), CSize (CSize))
-import Foreign.ForeignPtr (ForeignPtr, withForeignPtr)
 import Foreign.Marshal.Alloc (mallocBytes)
-import Foreign.Ptr (plusPtr)
-import Foreign.Storable (peek, poke)
-import Numeric (showIntAtBase)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (peekByteOff)
 import GHC.Base (realWorld#)
-import GHC.ForeignPtr (mallocPlainForeignPtrBytes)
 import GHC.IO (IO (IO), unsafeDupablePerformIO)
-import GHC.Prim (Addr#)
-import GHC.Ptr (Ptr (Ptr))
-import Prelude ((+), (*), (-), fromIntegral, putStrLn)
-------------------------------------------------------------------------------
-
-
-
-------------------------------------------------------------------------------
--- Standard C functions                                                     --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | int memcmp(const void *s1, const void *s2, size_t n);
-
-foreign import ccall unsafe "string.h memcmp" c_memcmp
-    :: Ptr Word64 -> Ptr Word64 -> CSize -> IO CInt
-
-memcmp :: Ptr Word64 -> Ptr Word64 -> Int -> IO CInt
-memcmp p q = c_memcmp p q . fromIntegral
-
-
-
-------------------------------------------------------------------------------
--- Data representations                                                     --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | A Word64 vector.
---
--- A Buffer is a Ptr Word64 payload, an Int offset in Word64s, and an Int
--- length in octets.
-
-data Buffer = B (Ptr Word64) Int Int
-
-
-------------------------------------------------------------------------------
--- | Http protocol version
-
-data HttpVersion = MkHttpVersion Int Int
-
-instance (Eq HttpVersion) where
-    (MkHttpVersion l0 r0) == (MkHttpVersion l1 r1) =
-        l0 == l1 && r0 == r1
-
-instance (Ord HttpVersion) where
-    compare (MkHttpVersion l0 r0) (MkHttpVersion l1 r1)
-        | l0 < l1       = LT
-        | l0 > l1       = GT
-        | otherwise     = compare r0 r1
-
-
-
-------------------------------------------------------------------------------
--- Low-level construction and destruction                                   --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
-
-mk_buffer :: Ptr Word64 -> Int -> Int -> Buffer
-mk_buffer = B
-
-
-------------------------------------------------------------------------------
-
-un_buffer :: Buffer -> (Ptr Word64, Int, Int)
-un_buffer (B p i l) = (p, i, l)
-
-
-------------------------------------------------------------------------------
--- | Create a Buffer of size l using Ptr p and then fill it with action f.
-
-create :: Ptr Word64 -> Int -> (Ptr Word64 -> IO ()) -> IO Buffer
-create p l f = f p >> return (mk_buffer p 0 l)
-
-
-
-------------------------------------------------------------------------------
--- Instances                                                                --
-------------------------------------------------------------------------------
-
-
-
-parse_http_version p b =
-    if is_prefix_of http_
-
-
-
-------------------------------------------------------------------------------
--- Predicates                                                               --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | Take two Buffers and test whether the first is a prefix of the second.
-
-is_prefix_of :: Buffer -> Buffer -> Bool
-is_prefix_of (B _ _ 0) _    = True
-is_prefix_of (B p0 o0 l0) (B p1 o1 l1)
-    | l1 < l0               = False
-    | otherwise             = inline_perform_io $
-        (== 0) <$> memcmp (seek p0 o0 l0) (seek p1 o1 l1) l0
-
-
-
-
-------------------------------------------------------------------------------
--- | Test whether the first octet in a Word64 is zero.
-
-is_0 :: Word64 -> Bool
-is_0 x = x .&. 0xffff == 0x0
-
-
-------------------------------------------------------------------------------
--- | Test whether the first octet in a Word64 is a digit.
-
-is_digit :: Word64 -> Bool
-is_digit x = let x0 = x .&. 0xffff in
-    x0 >= 0x30 && x0 <= 0x39
-
-
-------------------------------------------------------------------------------
--- | Test whether the first octet in a Word64 is a dot.
-
-is_dot :: Word64 -> Bool
-is_dot x = x .&. 0xffff == 0x46
-
-
-
-------------------------------------------------------------------------------
--- Literal values and Buffers                                               --
-------------------------------------------------------------------------------
-
-
-ones64 :: Word64
-ones64 = 0xffffffffffffffff --18446744073709551615
-
-
-httpVersionPrefix64 :: Word64
-httpVersionPrefix64 = 0x485454502f --"HTTP/"
-
-
-http_version_prefix :: Ptr Word64 -> Buffer
-http_version_prefix p = unsafe_create p 5 (\p' ->
-    poke p' http_version_prefix_64)
-
-
-
-------------------------------------------------------------------------------
--- Utilities                                                                --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | Find the first index in a Buffer that satisfies a predicate. If no index
--- satisfies the predicate, just give the length of the Buffer.
-
-find_index_or_end :: (Word64 -> Bool) -> Buffer -> Int
-find_index_or_end pred (B p0 o0 l0) = inline_perform_io $
-    iter (seek p0 o0 l0) 0
-  where
-    iter p n
-        | n >= l0   = return l0
-        | otherwise = peek p >>= \x ->
-            if pred x
-                then return n
-                else iter (plusPtr p 1) (n + 1)
-
-
-bin x = showIntAtBase 2 intToDigit x ""
-hex x = showIntAtBase 16 intToDigit x ""
-dec x = showIntAtBase 10 intToDigit x ""
-
-
-------------------------------------------------------------------------------
--- Substrings                                                               --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | Find the suffix remaining after dropping all consecutive elements from
--- the front of the Buffer that satisfy a predicate.
-
-drop_while :: (Word64 -> Bool) -> Buffer -> Buffer
-drop_while pred x = unsafe_drop (find_index_or_end (not . pred) x) x
-
-
-------------------------------------------------------------------------------
--- | Find the longest prefix of a Buffer in which all the elements satisfy a
--- predicate, which could be empty if the first element doesn't satisfy the
--- predicate.
-
-take_while :: (Word64 -> Bool) -> Buffer -> Buffer
-take_while pred x = unsafe_take (find_index_or_end (not . pred) x) x
-
-
-------------------------------------------------------------------------------
--- | Move the Buffer forward until the current element is not a zero.
-
-skip_zeros :: Buffer -> Buffer
-skip_zeros = drop_while is_0
-
-
-
-------------------------------------------------------------------------------
--- Unsafe                                                                   --
-------------------------------------------------------------------------------
-
-
-------------------------------------------------------------------------------
--- | Get a pointer to the first element of a buffer by passing the pointer in
--- the buffer, the Buffer offset in Word64s, and the Buffer length in octets.
-
-seek :: Ptr Word64 -> Int -> Int -> Ptr Word64
-seek p o l = plusPtr p (o*8 + (l - 8*(shiftR l 3)))
-
-
-------------------------------------------------------------------------------
--- | Faster perfom IO for GHC. Do *not* do memory allocation within the IO
--- action; it will really fuck shit up.
+import Numeric (showIntAtBase)
+import Prelude ((-), (*), (+))
+
+--                             -------- Offset in Word64s
+--                            /  ------ Octet in current Word64
+--                           /  /   --- Length in octets
+--                          /  /   /
+data Buf = B (Ptr Word64) Int Int Int
+
+alloc_buf :: Int -> (Ptr Word64 -> IO ()) -> IO Buf
+alloc_buf nword f = let l = nword * 8 in
+    mallocBytes l >>= \p-> f p >> return (B p 0 0 l)
+
+unsafe_alloc_buf :: Int -> (Ptr Word64 -> IO ()) -> Buf
+unsafe_alloc_buf nword = unsafeDupablePerformIO . alloc_buf nword
+
+select_octet :: Word64 -> Int -> Word64
+select_octet x 0 = x .&. 0xff00000000000000
+select_octet x 1 = x .&. 0x00ff000000000000
+select_octet x 2 = x .&. 0x0000ff0000000000
+select_octet x 3 = x .&. 0x000000ff00000000
+select_octet x 4 = x .&. 0x00000000ff000000
+select_octet x 5 = x .&. 0x0000000000ff0000
+select_octet x 6 = x .&. 0x000000000000ff00
+select_octet x 7 = x .&. 0x00000000000000ff
+
+data Result r = Fail Buf [String] String
+              | Cont (Buf -> Result r)
+              | Done Buf r
+
+newtype Input = I { get_input :: Buf }
+
+newtype Added = A { get_added :: Buf }
+
+data More = Nope | Yeah
+
+newtype Failure r = Failure 
+    { failure :: Input
+              -> Added
+              -> More
+              -> [String]
+              -> String
+              -> Result r 
+    }
+
+newtype Success a r = Success
+    { success :: Input
+              -> Added
+              -> More
+              -> a
+              -> Result r
+    }
+
+newtype Parser a = P
+    { go_parser :: forall r. Input
+                -> Added
+                -> More
+                -> Failure r
+                -> Success a r
+                -> Result r
+    }
+
+fmap_result :: (a -> b) -> Result a -> Result b
+fmap_result _ (Fail buf ctx msg) = Fail buf ctx msg
+fmap_result f (Cont k) = Cont (fmap_result f . k)
+fmap_result f (Done buf r) = Done buf (f r)
+
+octet_at :: Word64 -> Int -> Word64
+octet_at x i = shiftL x ((7 - i) * 8)
+
+take :: Int -> Buf -> Buf
+take n (B p0 off0 oct0 l0) = B p0 off0 oct0 n
+
+octet_with :: (Word64 -> Word64 -> a) -> Word64 -> Int -> Word64 -> a
+octet_with f to i w =
+    let to' = octet_at to i
+        w'  = select_octet w i
+    in  f to' w'
+
+between :: Word64 -> Word64 -> Int -> Word64 -> Bool
+between lo hi i x =
+    let x'  = select_octet x i
+        lo' = octet_at lo i
+        hi' = octet_at hi i
+    in  lo' <= x' && x' <= hi'
+
+drop :: Int -> Buf -> Buf
+drop n (B p0 off0 oct0 l0) =
+    let start   = off0 * 8 + oct0
+        off1    = shiftR start 3
+    in  (B p0 off1 ((start + n) - off1) (l0 - n))
+
+split_at :: Int -> Buf -> (Buf, Buf)
+split_at n b = (take n b, drop n b)
+
+take_with :: Int -> (Buf -> Bool) -> Buf -> Either String (Buf, Buf)
+take_with n pred buf@(B p0 off0 oct0 l0) =
+    let (h, t) = split_at n buf
+    in  if pred h then Right (h, t) else Left "take_with"
+
+drop_with :: Int -> (Buf -> Bool) -> Buf -> Either String Buf
+drop_with n pred buf@(B p0 off0 oct0 l0) =
+    let (h, t) = split_at n buf
+    in  if pred h then Right t else Left "drop_with"
+
+current_word :: Ptr Word64 -> Int -> Word64
+current_word p off = inline_perform_io (peekByteOff p (8 * off))
+
+get_word :: Buf -> Word64
+get_word (B p0 off0 0 _) = inline_perform_io (peekByteOff p0 (8 * off0))
+get_word (B p0 off0 oct0 l0) = inline_perform_io (do
+    let offset  = off0 * 8
+        shift   = oct0 * 8
+    unaligned0 <- peekByteOff p0 offset
+    unaligned1 <- peekByteOff p0 (offset + 8)
+    return ((.|.) (shiftL unaligned0 shift)
+                  (shiftR unaligned1 (64 - shift))))
 
 inline_perform_io :: IO a -> a
 inline_perform_io (IO m) = case m realWorld# of (# _, r #) -> r
 
+show_num_base :: Word64 -> Word64 -> String
+show_num_base b x = showIntAtBase b intToDigit x ""
 
-------------------------------------------------------------------------------
--- | Make a Buffer outside the IO Monad.
+bin, hex, dec :: Word64 -> String
+bin = show_num_base 2
+hex = show_num_base 16
+dec = show_num_base 10
 
-unsafe_create :: Ptr Word64 -> Int -> (Ptr Word64 -> IO ()) -> Buffer
-unsafe_create p l f = unsafeDupablePerformIO (create p l f)
+octet_eq :: Word64 -> Buf -> Bool
+octet_eq x (B p off oct _) = octet_with (==) x oct (current_word p off)
 
+octet_between :: Word64 -> Word64 -> Buf -> Bool
+octet_between lo hi (B p off oct _) = between lo hi oct (current_word p off)
 
-------------------------------------------------------------------------------
--- | Drop n octets from the Buffer. There is no check that the argument n0 is
--- non-negative and less than or equal to the length of the Buffer. Do *not*
--- use this function unless you can prove the Buffer has a length less than or
--- equal to n0 and that n0 is non-negative.
+is_http_version_prefix :: Word64 -> Bool
+is_http_version_prefix x = shiftR x 24 == 0x485454502f  -- "HTTP/"
 
-unsafe_drop :: Int -> Buffer -> Buffer
-unsafe_drop n0 (B p0 o0 l0) =
-    assert (0 <= n0 && n0 <= l0)
-           (B p0 (o0 + shiftR n0 3) (l0 - n0))
+is_digit :: Buf -> Bool
+is_digit = octet_between 0x30 0x39
 
+is_zero :: Buf -> Bool
+is_zero = octet_eq 0x0
 
-------------------------------------------------------------------------------
--- | Take n octets from the Buffer. There is no check that the argument n0 is
--- coherent. (See the comments about unsafe_drop to read the definition of
--- coherent.)
-
-unsafe_take :: Int -> Buffer -> Buffer
-unsafe_take n0 (B p0 o0 l0) =
-    assert (0 <= n0 && n0 <= l0)
-           (B p0 o0 n0)
-
-
-starts_with x l b = assert (0 <= l && l <= 3) $
-    case l of
-        0       -> True
-            
-
-
-
-------------------------------------------------------------------------------
+drop_http_prefix :: Buf -> Either String Buf
+drop_http_prefix = drop_with 5 (is_http_version_prefix . get_word)
