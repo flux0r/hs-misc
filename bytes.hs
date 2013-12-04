@@ -27,6 +27,8 @@ import Prelude ((-), (*), (+))
 --                          /  /   /
 data Buf = B (Ptr Word64) Int Int Int
 
+data HttpMessage = Request | Response
+
 alloc_buf :: Int -> (Ptr Word64 -> IO ()) -> IO Buf
 alloc_buf nword f = let l = nword * 8 in
     mallocBytes l >>= \p-> f p >> return (B p 0 0 l)
