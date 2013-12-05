@@ -1,4 +1,4 @@
-{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE MagicHash, NoImplicitPrelude #-}
 
 import Data.Bool ((||), (&&), Bool (True, False))
 import Data.ByteString (ByteString)
@@ -6,7 +6,8 @@ import Data.Either (Either)
 import Data.Eq ((==))
 import Data.Maybe (Maybe)
 import Data.Ord ((<), (<=))
-import Data.Word (Word8, Word16, Word32)
+import Data.Primitive (ByteArray)
+import Data.Word (Word, Word8, Word16, Word32)
 import Prelude (Integer)
 
 data HttpMsg = Request ReqLine [ReqHeader] (Maybe MessageBody)
@@ -257,3 +258,9 @@ is_dbl_quot     = (== 0x22)
 
 is_crlf :: Word16 -> Bool
 is_crlf = (== 0x0d0a)
+
+data Buf = B
+    { arr       :: ByteArray
+    , off       :: Word
+    , len       :: Word
+    }
