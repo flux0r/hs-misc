@@ -6,8 +6,8 @@ import Data.Maybe (Maybe)
 import Data.Word (Word16, Word32)
 import Prelude (Integer)
 
-newtype HttpMsg = Request ReqLine [Header] (Maybe MessageBody)
-                | Response StatusLine [Header] (Maybe MessageBody)
+data HttpMsg = Request ReqLine [Header] (Maybe MessageBody)
+             | Response StatusLine [Header] (Maybe MessageBody)
 
 data Method = Options
             | Get
@@ -18,14 +18,14 @@ data Method = Options
             | Trace
             | Connect
 
-newtype Uri = Uri
+data Uri = Uri
     { uriScheme         :: Scheme
     , uriHierPart       :: HierPart
     , uriQry            :: (Maybe Qry)
     , uriFrag           :: (Maybe Frag)
     }
 
-newtype AbsUri = AbsUri
+data AbsUri = AbsUri
     { absUriScheme      :: Scheme
     , absUriHierPart    :: HierPart
     , absUriQry         :: (Maybe Qry)
@@ -42,7 +42,7 @@ data UriRef = UriRef Uri | UriRel RelativeRef
 
 newtype Qry = Qry ByteString
 
-newtype RelativeRef = RelativeRef
+data RelativeRef = RelativeRef
     { relRefPath        :: RelPart
     , relRefQry         :: (Maybe Qry)
     , relRefFrag        :: (Maybe Frag)
@@ -50,7 +50,7 @@ newtype RelativeRef = RelativeRef
 
 newtype Frag = Frag ByteString
 
-newtype Authority = Authority
+data Authority = Authority
     { authorityUserInfo     :: (Maybe UserInfo)
     , authorityHost         :: Host
     , authorityPort         :: (Maybe Port)
@@ -79,21 +79,21 @@ newtype Port = Port Integer
 
 newtype Segment = Segment ByteString
 
-newtype SegmentNz = SegmentNz
+data SegmentNz = SegmentNz
     { segNzHead     :: ByteString
     , segNzTail     :: ByteString
     }
 
 data IpLiteral = Ipv6Addr | IpvFuture
 
-newtype PathNoScheme = PathNoScheme
+data PathNoScheme = PathNoScheme
     { pathNoSchemeHead      :: SegmentNzNc
     , pathNoSchemeTail      :: [Segment]
     }
 
 newtype Ipv4Addr = Ipv4Addr Word32
 
-newtype SegmentNzNc = SegmentNzNc
+data SegmentNzNc = SegmentNzNc
     { segNzNcHead       :: ByteString
     , segNzNcTail       :: ByteString
     }
@@ -107,7 +107,7 @@ data ReqUri = NoResource
 
 newtype HttpVersion = HttpVersion Word16
 
-newtype ReqLine = ReqLine
+data ReqLine = ReqLine
     { reqLineMethod     :: Method
     , reqLineUri        :: ReqUri
     , reqLineVersion    :: HttpVersion
@@ -162,3 +162,62 @@ data EntityHeader = Allow
 newtype MessageHeader = MessageHeader ByteString
 
 data MessageBody = EntityBody | TransferEncoded
+
+data StatusLine = StatusLine
+    { statLineVersion       :: HttpVersion
+    , statLineCode          :: StatusCode
+    , statLineReason        :: ReasonPhrase
+    }
+
+data StatusCode = Informational InformationalCode
+                | Success SuccessCode
+                | Redirection RedirectionCode
+                | ClientErr ClientErrCode
+                | ServErr ServErrCode
+
+data InformationalCode = Cont
+                       | SwitchingProtocols
+
+data SuccessCode = Ok
+                 | Created
+                 | Accepted
+                 | NonAuthoritativeInformation
+                 | NoContent
+                 | ResetContent
+                 | PartialContent
+
+data RedirectionCode = MultipleChoices
+                     | MovedPermanently
+                     | Found
+                     | SeeOther
+                     | NotModified
+                     | UseProxy
+                     | TemporaryRedirect
+
+data ClientErrCode = BadRequest
+                   | Unauthorized
+                   | PaymentRequired
+                   | Forbidden
+                   | NotFound
+                   | MethodNotAllowed
+                   | NotAcceptable
+                   | ProxyAuthenticationRequired
+                   | RequestTimeOut
+                   | Conflict
+                   | Gone
+                   | LengthRequired
+                   | PreconditionFailed
+                   | RequestEntityTooLarge
+                   | RequestUriTooLarge
+                   | UnsupportedMediaType
+                   | RequestedRangeNotSatisfiable
+                   | ExpectationFailed
+
+data ServErrCode = InternalServerError
+                 | NotImplemented
+                 | BadGateway
+                 | ServiceUnavailable
+                 | GatewayTimeout
+                 | HttpVersionNotSupported
+
+newtype ReasonPhrase = ReasonPhrase ByteString
