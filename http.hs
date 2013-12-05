@@ -1,13 +1,16 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
+import Data.Bool ((||), (&&), Bool (True, False))
 import Data.ByteString (ByteString)
 import Data.Either (Either)
+import Data.Eq ((==))
 import Data.Maybe (Maybe)
-import Data.Word (Word16, Word32)
+import Data.Ord ((<), (<=))
+import Data.Word (Word8, Word16, Word32)
 import Prelude (Integer)
 
-data HttpMsg = Request ReqLine [Header] (Maybe MessageBody)
-             | Response StatusLine [Header] (Maybe MessageBody)
+data HttpMsg = Request ReqLine [ReqHeader] (Maybe MessageBody)
+             | Response StatusLine [ResHeader] (Maybe MessageBody)
 
 data Method = Options
             | Get
@@ -123,29 +126,43 @@ data GenHeader = CacheControl
                | Via
                | Warning
 
-data ReqHeader = Accept
-               | AcceptCharset
-               | AcceptEncoding
-               | AcceptLanguage
-               | Authorization
-               | Expect
-               | From
-               | Host
-               | IfMatch
-               | IfModifiedSince
-               | IfNoneMatch
-               | IfRange
-               | IfUnmodifiedSince
-               | MaxForwards
-               | ProxyAuthorization
-               | Range
-               | Referer
-               | Te
-               | UserAgent
+data RequestHeader = Accept
+                   | AcceptCharset
+                   | AcceptEncoding
+                   | AcceptLanguage
+                   | Authorization
+                   | Expect
+                   | From
+                   | Host
+                   | IfMatch
+                   | IfModifiedSince
+                   | IfNoneMatch
+                   | IfRange
+                   | IfUnmodifiedSince
+                   | MaxForwards
+                   | ProxyAuthorization
+                   | Range
+                   | Referer
+                   | Te
+                   | UserAgent
 
-data Header = GeneralH GenHeader
-            | RequestH ReqHeader
-            | EntityH EntityHeader
+data ResponseHeader = AcceptRanges
+                    | Age
+                    | ETag
+                    | Location
+                    | ProxyAuthenticate
+                    | RetryAfter
+                    | Server
+                    | Vary
+                    | WwwAuthenticate
+
+data ReqHeader = ReqGeneralH GenHeader
+               | RequestH RequestHeader
+               | ReqEntityH EntityHeader
+
+data ResHeader = ResGeneralH GenHeader
+               | ResponseH ResponseHeader
+               | ResEntityH EntityHeader
 
 data EntityHeader = Allow
                   | ContentEncoding
@@ -221,3 +238,22 @@ data ServErrCode = InternalServerError
                  | HttpVersionNotSupported
 
 newtype ReasonPhrase = ReasonPhrase ByteString
+
+is_octet, is_char, is_upalpha,
+    is_loalpha, is_alpha, is_digit, is_ctl,
+    is_cr, is_lf, is_sp, is_ht, is_dbl_quot :: Word8 -> Bool
+is_octet _      = True
+is_char x       = x < 0x80
+is_upalpha x    = 0x40 < x && x < 0x5b
+is_loalpha x    = 0x60 < x && x < 0x7b
+is_alpha x      = is_upalpha x || is_loalpha x
+is_digit x      = 0x2f < x && x < 0x3a
+is_ctl x        = x < 0x20 || x == 0x7f
+is_cr           = (== 0x0d)
+is_lf           = (== 0x0a)
+is_sp           = (== 0x20)
+is_ht           = (== 0x09)
+is_dbl_quot     = (== 0x22)
+
+is_crlf :: Word16 -> Bool
+is_crlf = (== 0x0d0a)
