@@ -6,9 +6,6 @@ class (Real (Measure a)) => Measured a where
     type Measure a :: *
     measure :: a -> Measure a
 
-class Semigroup a where
-    (<>) :: a -> a -> a
-
 class (Measured a, Integral (Idx a)) => Array a where
     type Idx a :: *
     type Elt a :: *
