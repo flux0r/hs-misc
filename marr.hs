@@ -4,6 +4,7 @@
 import Control.Monad (Monad)
 import Data.Word (Word, Word8)
 import Foreign.Ptr (Ptr)
+import Foreign.Storable (peek)
 import Prelude (Integral, Real)
 
 class (Real (Measure a)) => Measured a where

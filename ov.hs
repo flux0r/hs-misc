@@ -8,8 +8,9 @@ import Data.Ord (Ordering (GT, LT, EQ), compare, min)
 import Data.Word (Word64, Word8)
 import Foreign.C.Types (CSize (CSize), CULong (CULong))
 import Foreign.Ptr (Ptr, plusPtr)
+import Foreign.Storable (peekByteOff)
 import GHC.Base (IO (IO), realWorld#)
-import Prelude (fromIntegral)
+import Prelude ((-), fromIntegral)
 
 foreign import ccall unsafe "string.h memcmp" c_memcmp
     :: Ptr Word8 -> Ptr Word8 -> CSize -> IO CULong
@@ -39,3 +40,9 @@ cmp (O px ox lx) (O py oy ly)   = inlinePerformIO
 
 inlinePerformIO :: IO a -> a
 inlinePerformIO (IO m) = case m realWorld# of (# _, r #) -> r
+
+bounds :: OctetVector -> (Word64, Word64)
+bounds (O _ o l) = (0, l - o)
+
+unsafe_ref :: OctetVector -> Word8
+unsafe_ref (O p o _) = inlinePerformIO (peekByteOff p (fromIntegral o))
